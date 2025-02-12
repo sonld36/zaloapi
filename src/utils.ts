@@ -1,10 +1,20 @@
-import { ContextBase } from "./context";
+import { ContextBase, ContextSession, isContextSession } from "./context";
 import * as toughCookie from 'tough-cookie';
 import cryptojs from "crypto-js";
 import { ZaloApiError } from "./errors/ZaloApiErros";
+import { API } from "./zalo";
+import path from "node:path";
 
 
 export const isBun = typeof Bun !== "undefined";
+
+type ZaloResponse<T> = {
+    data: T | null;
+    error: {
+        message: string;
+        code?: number;
+    } | null;
+};
 
 export function makeURL(
     ctx: ContextBase,
@@ -28,7 +38,6 @@ export function makeURL(
 }
 
 export async function request(ctx: ContextBase, url: string, options?: RequestInit, raw = false) {
-    if (!ctx.cookie) ctx.cookie = new toughCookie.CookieJar();
     const origin = new URL(url).origin;
 
     const defaultHeaders = await getDefaultHeaders(ctx, origin) as any;
@@ -49,7 +58,7 @@ export async function request(ctx: ContextBase, url: string, options?: RequestIn
         for (const cookie of response.headers.getSetCookie()) {
             const parsed = toughCookie.Cookie.parse(cookie);
             try {
-                if (parsed) await ctx.cookie.setCookie(parsed, origin);
+                // if (parsed) await ctx.cookie.setCookie(parsed, origin);
             } catch {}
         }
     }
@@ -66,25 +75,32 @@ export async function request(ctx: ContextBase, url: string, options?: RequestIn
     return response;
 }
 
+export const logger = (ctx: ContextBase) => ({
+    verbose: (...args: any[]) => {
+        if (ctx.options.logging) console.log("\x1b[2m🚀 VERBOSE\x1b[0m", ...args);
+    },
+    info: (...args: any[]) => {
+        if (ctx.options.logging) console.log("\x1b[34mINFO\x1b[0m", ...args);
+    },
+    warn: (...args: any[]) => {
+        if (ctx.options.logging) console.log("\x1b[33mWARN\x1b[0m", ...args);
+    },
+    error: (...args: any[]) => {
+        if (ctx.options.logging) console.log("\x1b[31mERROR\x1b[0m", ...args);
+    },
+});
+
 
 export async function getDefaultHeaders(ctx: ContextBase, origin: string = "https://chat.zalo.me") {
-    if (!ctx.cookie) {
-        console.log("Cookie is not available");
-        return null;
-    }
-    
-    if (!ctx.userAgent) {
-        console.log("User agent is not available");
-        return null;
-    }
-    
+    if (!ctx.cookie) throw new ZaloApiError("Cookie is not available");
+    if (!ctx.userAgent) throw new ZaloApiError("User agent is not available");
 
     return {
         Accept: "application/json, text/plain, */*",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
         "content-type": "application/x-www-form-urlencoded",
-        Cookie: await ctx.cookie.getCookieString(origin),
+        Cookie: ctx.cookie,
         Origin: "https://chat.zalo.me",
         Referer: "https://chat.zalo.me/",
         "User-Agent": ctx.userAgent,
@@ -201,6 +217,19 @@ export class ParamsEncryptor {
     }
 }
 
+export function encodeAES(secretKey: string, data: any, t = 0): string | null {
+    try {
+        const key = cryptojs.enc.Base64.parse(secretKey);
+        return cryptojs.AES.encrypt(data, key, {
+            iv: cryptojs.enc.Hex.parse("00000000000000000000000000000000"),
+            mode: cryptojs.mode.CBC,
+            padding: cryptojs.pad.Pkcs7,
+        }).ciphertext.toString(cryptojs.enc.Base64);
+    } catch (n) {
+        return t < 3 ? encodeAES(secretKey, data, t + 1) : null;
+    }
+}
+
 export function decryptResp(key: string, data: string): Record<string, any> | null | string {
     let n = null;
     try {
@@ -231,4 +260,157 @@ function decodeRespAES(key: string, data: string) {
             padding: cryptojs.pad.Pkcs7,
         },
     ).toString(cryptojs.enc.Utf8);
+}
+
+export function decodeAES(secretKey: string, data: string, t = 0): string | null {
+    try {
+        data = decodeURIComponent(data);
+        let key = cryptojs.enc.Base64.parse(secretKey);
+        return cryptojs.AES.decrypt(
+            {
+                ciphertext: cryptojs.enc.Base64.parse(data),
+            } as cryptojs.lib.CipherParams,
+            key,
+            {
+                iv: cryptojs.enc.Hex.parse("00000000000000000000000000000000"),
+                mode: cryptojs.mode.CBC,
+                padding: cryptojs.pad.Pkcs7,
+            },
+        ).toString(cryptojs.enc.Utf8);
+    } catch (n) {
+        return t < 3 ? decodeAES(secretKey, data, t + 1) : null;
+    }
+}
+
+
+export async function resolveResponse<T = any>(
+    ctx: ContextSession,
+    res: Response,
+    cb?: (result: ZaloResponse<unknown>) => T,
+) {
+    const result = await handleZaloResponse<T>(ctx, res);
+    if (result.error) throw new ZaloApiError(result.error.message, result.error.code);
+    if (cb) return cb(result);
+
+    return result.data as T;
+}
+
+export async function handleZaloResponse<T = any>(ctx: ContextSession, response: Response) {
+    const result: ZaloResponse<T> = {
+        data: null,
+        error: null,
+    };
+
+    if (!response.ok) {
+        result.error = {
+            message: "Request failed with status code " + response.status,
+        };
+        return result;
+    }
+
+    try {
+        const jsonData: {
+            error_code: number;
+            error_message: string;
+            data: string;
+        } = await response.json();
+
+        if (jsonData.error_code != 0) {
+            result.error = {
+                message: jsonData.error_message,
+                code: jsonData.error_code,
+            };
+            return result;
+        }
+
+        const decodedData: {
+            error_code: number;
+            error_message: string;
+            data: T;
+        } = JSON.parse(decodeAES(ctx.secretKey!, jsonData.data)!);
+
+        if (decodedData.error_code != 0) {
+            result.error = {
+                message: decodedData.error_message,
+                code: decodedData.error_code,
+            };
+            return result;
+        }
+
+        result.data = decodedData.data;
+    } catch (error) {
+        console.error(error);
+        result.error = {
+            message: "Failed to parse response data",
+        };
+    }
+
+    return result;
+}
+
+export function getFileExtension(e: string) {
+    return path.extname(e).slice(1);
+}
+
+export function getClientMessageType(msgType: string) {
+    if (msgType === "webchat") return 1;
+    if (msgType === "chat.voice") return 31;
+    if (msgType === "chat.photo") return 32;
+    if (msgType === "chat.sticker") return 36;
+    if (msgType === "chat.doodle") return 37;
+    if (msgType === "chat.recommended") return 38;
+
+    if (msgType === "chat.link") return 38; // don't know || if (msgType === "chat.link") return 1;
+    if (msgType === "chat.video.msg") return 44; // not sure
+
+    if (msgType === "share.file") return 46;
+    if (msgType === "chat.gif") return 49;
+    if (msgType === "chat.location.new") return 43;
+
+    return 1;
+}
+
+export function apiFactory<T>() {
+    return <
+        K extends (
+            api: API,
+            ctx: ContextSession,
+            utils: {
+                makeURL: (
+                    baseURL: string,
+                    params?: Record<string, any>,
+                    apiVersion?: boolean,
+                ) => ReturnType<typeof makeURL>;
+                encodeAES: (data: any, t?: number) => ReturnType<typeof encodeAES>;
+                request: (url: string, options?: RequestInit, raw?: boolean) => ReturnType<typeof request>;
+                logger: ReturnType<typeof logger>;
+                resolve: (
+                    res: Response,
+                    cb?: (result: ZaloResponse<unknown>) => T,
+                ) => ReturnType<typeof resolveResponse<T>>;
+            },
+        ) => any,
+    >(
+        callback: K,
+    ) => {
+        return (ctx: ContextBase, api: API) => {
+            if (!isContextSession(ctx)) throw new ZaloApiError("Invalid context " + JSON.stringify(ctx, null, 2));
+
+            const utils = {
+                makeURL(baseURL: string, params?: Record<string, any>, apiVersion?: boolean) {
+                    return makeURL(ctx, baseURL, params, apiVersion);
+                },
+                encodeAES(data: any, t?: number) {
+                    return encodeAES(ctx.secretKey, data, t);
+                },
+                request(url: string, options?: RequestInit, raw?: boolean) {
+                    return request(ctx, url, options, raw);
+                },
+                logger: logger(ctx),
+                resolve: (res: Response, cb?: (result: ZaloResponse<unknown>) => T) => resolveResponse<T>(ctx, res, cb),
+            };
+
+            return callback(api, ctx, utils) as ReturnType<K>;
+        };
+    };
 }

@@ -1,6 +1,6 @@
 import { ContextBase } from "../src/context";
 import { decryptResp, makeURL, ParamsEncryptor, request } from "../src/utils";
-import * as cryptojs from 'crypto-js';
+import cryptojs from 'crypto-js';
 
 export async function login(ctx: ContextBase, encryptParams: boolean) {
     const encryptedParams = await getEncryptParam(ctx, encryptParams, "getlogininfo");
@@ -23,6 +23,36 @@ export async function login(ctx: ContextBase, encryptParams: boolean) {
     } catch (error) {
         console.log(error);
         throw new Error("Failed to login: " + error);
+    }
+}
+
+export async function getServerInfo(ctx: ContextBase, encryptParams: boolean) {
+    const encryptedParams = await getEncryptParam(ctx, encryptParams, "getserverinfo");
+
+    try {
+        const response = await request(
+            ctx,
+            makeURL(
+                ctx,
+                "https://wpa.chat.zalo.me/api/login/getServerInfo",
+                {
+                    imei: ctx.imei,
+                    type: ctx.API_TYPE,
+                    client_version: ctx.API_VERSION,
+                    computer_name: "Web",
+                    signkey: encryptedParams.params.signkey,
+                },
+                false,
+            ),
+        );
+        if (!response.ok) throw new Error("Failed to fetch server info: " + response.statusText);
+        const data = await response.json();
+
+        if (data.data == null) throw new Error("Failed to fetch server info: " + data.error_message);
+        return data.data;
+    } catch (error) {
+        console.error(error);
+        throw new Error("Failed to fetch server info: " + error);
     }
 }
 

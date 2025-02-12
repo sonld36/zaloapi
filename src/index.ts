@@ -9,9 +9,14 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-app.post("/login", (req: Request<Credentials>, res: Response) => {
+app.post("/login", async (req: Request<Credentials>, res: Response) => {
   const zalo: Zalo = new Zalo();
-  zalo.login(req.body);
+  const api = await zalo.login(req.body);
+
+  const user  = await api.findUser("0968437696");
+  const uid = user.uid;
+  api.sendMessage("Hello world", uid);
+  
   res.send("Express + TypeScript Server");
 });
 

@@ -39,7 +39,7 @@ type ExtraVer = {
 export type AppContextBase = {
     uid: string;
     imei: string;
-    cookie: CookieJar;
+    cookie: string;
     userAgent: string;
     language: string;
     secretKey: string | null;

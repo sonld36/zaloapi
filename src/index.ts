@@ -11,11 +11,13 @@ app.use(express.json());
 
 app.post("/login", async (req: Request<Credentials>, res: Response) => {
   const zalo: Zalo = new Zalo();
-  const api = await zalo.login(req.body);
+  // const api = await zalo.login(req.body);
 
-  const user  = await api.findUser("0968437696");
-  const uid = user.uid;
-  api.sendMessage("Hello world", uid);
+  // const user  = await api.findUser("0329444369");
+  // const uid = user.uid;
+  // api.sendMessage("Hello world", uid);
+
+  const apiQr = await zalo.loginQr();
   
   res.send("Express + TypeScript Server");
 });

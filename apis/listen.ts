@@ -33,7 +33,7 @@ interface ListenerEvents {
 
 export class Listener extends EventEmitter<ListenerEvents> {
     private url: string;
-    private cookie: string;
+    // private cookie: string;
     private userAgent: string;
 
     private ws: WebSocket | null;
@@ -56,7 +56,7 @@ export class Listener extends EventEmitter<ListenerEvents> {
         if (!ctx.userAgent) throw new Error("User agent is not available");
 
         this.url = url;
-        this.cookie = ctx.cookie;
+        // this.cookie = ctx.cookie;
         this.userAgent = ctx.userAgent;
 
         this.selfListen = ctx.options.selfListen;

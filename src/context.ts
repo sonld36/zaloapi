@@ -1,5 +1,5 @@
 import type { Agent } from "http";
-import type { CookieJar } from "tough-cookie";
+import type { CookieJar, SerializedCookieJar } from "tough-cookie";
 
 type UploadEventData = {
     fileUrl: string;
@@ -39,7 +39,7 @@ type ExtraVer = {
 export type AppContextBase = {
     uid: string;
     imei: string;
-    cookie: string;
+    cookie: SerializedCookieJar[] | CookieJar;
     userAgent: string;
     language: string;
     secretKey: string | null;

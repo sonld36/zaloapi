@@ -8,6 +8,7 @@ import { getAllFriendsFactory } from '../apis/getAllFriends';
 import { getAllGroupsFactory } from '../apis/getAllGroups';
 import { getGroupInfoFactory } from '../apis/getGroupInfo';
 import { findUserFactory } from '../apis/findUser';
+import { loginQR, LoginQRCallback } from '../apis/getQRCodeLogin';
 
 export type Cookie = {
     domain: string;
@@ -101,6 +102,28 @@ export class Zalo {
 
     //     return jar;
     // }
+
+
+    public async loginQr(
+        options?: { userAgent?: string; language?: string; qrPath?: string },
+        callback?: LoginQRCallback,
+    ) {
+        if(!options) options = {};
+        if(!options.userAgent) options.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
+        if(!options.language) options.language = "vi";
+
+        const ctx = createContext(this.options.apiType, this.options.apiVersion);
+        Object.assign(ctx.options, this.options);
+
+        const loginQrResult = await loginQR(
+            ctx,
+            options as { userAgent: string; language: string; qrPath?: string },
+            callback,
+        );
+
+        console.log(loginQrResult);
+        
+    }
 }
 
 export class API {

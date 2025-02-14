@@ -1,4 +1,4 @@
-import { CookieJar, SerializedCookie, SerializedCookieJar } from "tough-cookie";
+import { Cookie, CookieJar, SerializedCookie, SerializedCookieJar } from "tough-cookie";
 import { ContextBase } from "../src/context";
 import { ZaloApiError } from "../src/errors/ZaloApiErros";
 import { logger, request } from "../src/utils";
@@ -10,6 +10,7 @@ export enum LoginQRCallbackEventType {
     QRCodeScanned,
     QRCodeDeclined,
     GotLoginInfo,
+    QRCodeRegenerated,
 }
 export type LoginQRCallbackEvent =
     | {
@@ -65,11 +66,28 @@ export type LoginQRCallbackEvent =
               userAgent: string;
           };
           actions: null;
-      };
+      }
+    | {
+        type: LoginQRCallbackEventType.QRCodeRegenerated;
+        data: {
+            code: string;
+            image: string;
+            options: {
+                enabledCheckOCR: boolean;
+                enabledMultiLayer: boolean;
+            };
+        },
+        actions: {
+            saveToFile: (qrPath?: string) => Promise<any>;
+            retry: () => any;
+            abort: () => any;
+        }
+    }  
+    ;
 
 export type LoginQRCallback = (event: LoginQRCallbackEvent) => any;
 
-async function loadLoginPage(ctx: ContextBase, callback?: LoginQRCallback) {
+async function loadLoginPage(ctx: ContextBase) {
     const response = await request(ctx, "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F", {
         headers: {
             accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -91,47 +109,16 @@ async function loadLoginPage(ctx: ContextBase, callback?: LoginQRCallback) {
     });
 
     const html = await response.text();
-
-    const headers = response.headers;
-    const cookies = headers.getSetCookie();
-
-    //merge cookies into only one cookie
-    const cookieJar = new CookieJar();
-    cookies.forEach((cookie) => {
-        cookieJar.setCookieSync(cookie, "https://id.zalo.me");
-    });
-
-    console.log(cookieJar);
-
-    callback?.({
-        type: LoginQRCallbackEventType.GotLoginInfo,
-        data: {
-            cookie: cookieJar.toJSON()?.cookies ?? [],
-            imei: ctx.imei ?? "",
-            userAgent: ctx.userAgent ?? "",
-        },
-        actions: null,
-    });
-    
-
     const regex = /https:\/\/stc-zlogin\.zdn\.vn\/main-([\d.]+)\.js/;
     const match = html.match(regex);
 
     return match?.[1];
 }
 
-async function getLoginInfo(ctx: ContextBase, version: string) {
+async function getLoginInfo(ctx: ContextBase, version: string, callback?: LoginQRCallback) {
     const form = new URLSearchParams();
     form.append("continue", "https://chat.zalo.me/");
     form.append("v", version);
-
-    const cookie = ctx.cookie as SerializedCookieJar[];
-
-    const cookieString = cookie
-        .map((cookie) => {
-            return `${cookie.key}=${cookie.value}`;
-        })
-        .join("; ");
 
     return await request(ctx, "https://id.zalo.me/account/logininfo", {
         headers: {
@@ -145,7 +132,6 @@ async function getLoginInfo(ctx: ContextBase, version: string) {
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
-            Cookie: cookieString,
             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
             "Referrer-Policy": "strict-origin-when-cross-origin",
 
@@ -157,7 +143,7 @@ async function getLoginInfo(ctx: ContextBase, version: string) {
         .catch(logger(ctx).error);
 }
 
-async function verifyClient(ctx: ContextBase, version: string) {
+async function verifyClient(ctx: ContextBase, version: string, callback?: LoginQRCallback) {
     const form = new URLSearchParams();
     form.append("type", "device");
     form.append("continue", "https://chat.zalo.me/");
@@ -180,6 +166,29 @@ async function verifyClient(ctx: ContextBase, version: string) {
         },
         body: form,
         method: "POST",
+    }).then((response) => {
+        const headers = response.headers;
+    const cookies = headers.getSetCookie();
+
+    //merge cookies into only one cookie
+    const cookieJar = new CookieJar();
+    cookies.forEach((cookie) => {
+        cookieJar.setCookieSync(cookie, "https://id.zalo.me");
+    });
+
+    console.log(cookieJar);
+
+    callback?.({
+        type: LoginQRCallbackEventType.GotLoginInfo,
+        data: {
+            cookie: cookieJar.toJSON()?.cookies ?? [],
+            imei: ctx.imei ?? "",
+            userAgent: ctx.userAgent ?? "",
+        },
+        actions: null,
+    });
+
+    return response;
     })
         .then((res) => res.json())
         .catch(logger(ctx).error);
@@ -188,6 +197,7 @@ async function verifyClient(ctx: ContextBase, version: string) {
 async function generate(
     ctx: ContextBase,
     version: string,
+    callback?: LoginQRCallback,
 ): Promise<{
     data: {
         code: string;
@@ -204,14 +214,6 @@ async function generate(
     form.append("continue", "https://chat.zalo.me/");
     form.append("v", version);
 
-    const cookie = ctx.cookie as SerializedCookieJar[];
-
-    const cookieString = cookie
-        .map((cookie) => {
-            return `${cookie.key}=${cookie.value}`;
-        })
-        .join("; ");
-
     return await request(ctx, "https://id.zalo.me/account/authen/qr/generate", {
         headers: {
             accept: "*/*",
@@ -224,7 +226,6 @@ async function generate(
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
-            Cookie: cookieString,
             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
             "Referrer-Policy": "strict-origin-when-cross-origin",
             userAgent: ctx.userAgent ?? "",
@@ -246,6 +247,7 @@ async function waitingScan(
     version: string,
     code: string,
     signal: AbortSignal,
+    callback?: LoginQRCallback,
 ): Promise<
     | {
           data: {
@@ -262,17 +264,6 @@ async function waitingScan(
     form.append("continue", "https://chat.zalo.me/");
     form.append("v", version);
 
-    const cookie = ctx.cookie as SerializedCookieJar[];
-
-    console.log(version, code, signal);
-    
-
-    const cookieString = cookie
-        .map((cookie) => {
-            return `${cookie.key}=${cookie.value}`;
-        })
-        .join("; ");
-
     return await request(ctx, "https://id.zalo.me/account/authen/qr/waiting-scan", {
         headers: {
             accept: "*/*",
@@ -285,7 +276,6 @@ async function waitingScan(
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
-            Cookie: cookieString,
             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
             "Referrer-Policy": "strict-origin-when-cross-origin",
             userAgent: ctx.userAgent ?? "",
@@ -296,15 +286,45 @@ async function waitingScan(
     })
         .then((res) => res.json())
         .then((data) => {
-            if (data.data.image != null) {
-                saveQRCodeToFile("qr.png", data.data.image.replace(/^data:image\/png;base64,/, ""));
+            if(data.error_code == 0) {
+                if (data.data.image != null) {
+                    if (callback) {
+                        callback({
+                            type: LoginQRCallbackEventType.QRCodeRegenerated,
+                            data: {
+                                code: data.data.code,
+                                image: data.data.image,
+                                options: {
+                                    enabledCheckOCR: data.data.options.enabledCheckOCR,
+                                    enabledMultiLayer: data.data.options.enabledMultiLayer,
+                                },
+                            },
+                            actions: {
+                                async saveToFile(qrPath = "qr.png") {
+                                    await saveQRCodeToFile(qrPath, data.data.image.replace(/^data:image\/png;base64,/, ""));
+                                    logger(ctx).info("Scan the QR code at", `'${qrPath}'`, "to proceed with login");
+                                },
+                                retry() {
+                                    return waitingScan(ctx, version, code, signal, callback);
+                                },
+                                abort() {
+                                },
+                            },
+                        });
+                    }
+                }
+                
+                if (data.data.display_name != null) {
+                    logger(ctx).info("Scanned by", data.data.display_name);
+                }
+
+                return data;
             }
-            
+
+           
             if (data.error_code == 8) {
                 return waitingScan(ctx, version, code, signal);
             }
-
-            return data;
         })
         .catch((e) => {
             if (!signal.aborted) logger(ctx).error(e);
@@ -316,6 +336,7 @@ async function waitingConfirm(
     version: string,
     code: string,
     signal: AbortSignal,
+    callback?: LoginQRCallback,
 ): Promise<
     | {
           data: null;
@@ -331,13 +352,6 @@ async function waitingConfirm(
     form.append("continue", "https://chat.zalo.me/");
     form.append("v", version);
 
-    const cookie = ctx.cookie as SerializedCookieJar[];
-
-    const cookieString = cookie
-        .map((cookie) => {
-            return `${cookie.key}=${cookie.value}`;
-        })
-        .join("; ");
 
     logger(ctx).info("Please confirm on your phone");
 
@@ -353,7 +367,6 @@ async function waitingConfirm(
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
-            Cookie: cookieString,
             Referer: "https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F",
             "Referrer-Policy": "strict-origin-when-cross-origin",
             userAgent: ctx.userAgent ?? "",
@@ -362,8 +375,26 @@ async function waitingConfirm(
         method: "POST",
         signal,
     })
-        .then((res) => res.json())
+        .then((res) => {
+            var headers = res.headers;
+            var cookies = headers.getSetCookie();
+            console.log("login confirm", cookies);
+
+            //merge cookies into only one cookie
+            const cookieJar = new CookieJar();
+            cookies.forEach((cookie) => {
+                cookieJar.setCookieSync(cookie, "https://id.zalo.me", {
+                    ignoreError: true,
+                });
+            });
+
+            console.log("login confirm cookieJar", cookieJar);
+
+            return res.json();
+        })
         .then((data) => {
+            console.log("waitingConfirm", data);
+            
             if (data.error_code == 8) {
                 return waitingConfirm(ctx, version, code, signal);
             }
@@ -397,7 +428,8 @@ async function checkSession(ctx: ContextBase) {
             redirect: "manual",
             method: "GET",
         },
-    ).catch(logger(ctx).error);
+    )
+    .catch(logger(ctx).error);
 }
 
 async function getUserInfo(ctx: ContextBase): Promise<
@@ -456,15 +488,9 @@ export async function loginQR(
 
         if (ctx.options.logging) console.log();
 
-        const loginVersion = await loadLoginPage(ctx, (event) => {
-            if (event.type === LoginQRCallbackEventType.GotLoginInfo) {
-                ctx.cookie = event.data.cookie as SerializedCookieJar[];
-                ctx.userAgent = event.data.userAgent;
-                ctx.imei = event.data.imei;
-            }
-        });
+        const loginVersion = await loadLoginPage(ctx);
         if (!loginVersion) return reject(new ZaloApiError("Cannot get API login version"));
-
+        
         logger(ctx).info("Got login version:", loginVersion);
 
         await getLoginInfo(ctx, loginVersion);
@@ -525,7 +551,14 @@ export async function loginQR(
             }
         }, 100_000);
 
-        const scanResult = await waitingScan(ctx, loginVersion, qrGenResult.data.code, controller.signal);
+        let code = qrGenResult.data.code;
+
+        const scanResult = await waitingScan(ctx, loginVersion, qrGenResult.data.code, controller.signal, (event) => {
+            if(event.type === LoginQRCallbackEventType.QRCodeRegenerated) {
+                event.actions.saveToFile();
+                code = event.data.code;
+            }
+        });
         if (!scanResult || !scanResult.data) return resolve(null);
 
         if (callback) {
@@ -541,7 +574,7 @@ export async function loginQR(
             });
         }
 
-        const confirmResult = await waitingConfirm(ctx, loginVersion, qrGenResult.data.code, controller.signal);
+        const confirmResult = await waitingConfirm(ctx, loginVersion, code, controller.signal);
         if (!confirmResult) return resolve(null);
 
         const checkSessionResult = await checkSession(ctx);

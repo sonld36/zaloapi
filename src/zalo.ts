@@ -1,7 +1,7 @@
 import * as toughCookie from 'tough-cookie';
 import { ContextBase, ContextSession, createContext, isContextSession, Options } from './context';
 import { getServerInfo, login } from '../apis/login';
-import { logger, makeURL } from './utils';
+import { generateZaloUUID, logger, makeURL } from './utils';
 import { Listener } from '../apis/listen';
 import { sendMessageFactory } from '../apis/sendMessage';
 import { getAllFriendsFactory } from '../apis/getAllFriends';
@@ -9,6 +9,7 @@ import { getAllGroupsFactory } from '../apis/getAllGroups';
 import { getGroupInfoFactory } from '../apis/getGroupInfo';
 import { findUserFactory } from '../apis/findUser';
 import { loginQR, LoginQRCallback } from '../apis/getQRCodeLogin';
+import { checkUpdate } from '../apis/update';
 
 export type Cookie = {
     domain: string;
@@ -26,7 +27,7 @@ export type Cookie = {
 
 export type Credentials = {
     imei: string;
-    cookie: Cookie[] | toughCookie.SerializedCookie[] | { url: string; cookies: Cookie[] } | string;
+    cookie: Cookie[] | toughCookie.SerializedCookie[] | { url: string; cookies: Cookie[] };
     userAgent: string;
     language?: string;
 };
@@ -37,26 +38,59 @@ export class Zalo {
 
     constructor(private options: Partial<Options> = {}) {}
 
+    private parseCookies(cookie: Credentials["cookie"]): toughCookie.CookieJar {
+        const cookieArr = Array.isArray(cookie) ? cookie : cookie.cookies;
+
+        cookieArr.forEach((e, i) => {
+            if (typeof e.domain == "string" && e.domain.startsWith(".")) cookieArr[i].domain = e.domain.slice(1);
+        });
+
+        const jar = new toughCookie.CookieJar();
+        for (const each of cookieArr) {
+            try {
+                jar.setCookieSync(
+                    toughCookie.Cookie.fromJSON({
+                        ...each,
+                        key: (each as toughCookie.SerializedCookie).key || each.name,
+                    }) ?? "",
+                    "https://chat.zalo.me",
+                );
+            } catch {}
+        }
+        return jar;
+    }
+
     public async login(credentials: Credentials) {
         const ctx = createContext(this.options.apiType, this.options.apiVersion);
         Object.assign(ctx.options, this.options);
         return this.loginCookie(ctx, credentials);
     }
 
+    private validateParams(credentials: Credentials) {
+        if (!credentials.imei || !credentials.cookie || !credentials.userAgent) {
+            throw new Error("Missing required params");
+        }
+    }
+
     private async loginCookie(ctx: ContextBase, credentials: Credentials) {
+        await checkUpdate(ctx);
+
+        this.validateParams(credentials);
+
         ctx.imei = credentials.imei;
-        ctx.cookie = credentials.cookie as any;
-        ctx.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        ctx.cookie = this.parseCookies(credentials.cookie);
+        ctx.userAgent = credentials.userAgent;
         ctx.language = credentials.language || "vi";
 
-
-        const loginData = await login(ctx, true)
+        const loginData = await login(ctx, this.enableEncryptParam);
         const serverInfo = await getServerInfo(ctx, this.enableEncryptParam);
 
         if (!loginData || !serverInfo) throw new Error("Đăng nhập thất bại");
         ctx.secretKey = loginData.data.zpw_enk;
         ctx.uid = loginData.data.uid;
 
+        // Zalo currently responds with setttings instead of settings
+        // they might fix this in the future, so we should have a fallback just in case
         ctx.settings = serverInfo.setttings || serverInfo.settings;
 
         ctx.extraVer = serverInfo.extra_ver;
@@ -72,37 +106,7 @@ export class Zalo {
                 t: Date.now(),
             }),
         );
-        
     }
-
-
-    // private parseCookies(cookie: Credentials["cookie"]): toughCookie.CookieJar {
-    //     const cookieArr = Array.isArray(cookie) ? cookie : cookie.cookies;
-
-    //     cookieArr.forEach((e, i) => {
-    //         if (typeof e.domain == "string" && e.domain.startsWith(".")) cookieArr[i].domain = e.domain.slice(1);
-    //     });
-
-    //     const jar = new toughCookie.CookieJar();
-
-    //     for(const each of cookieArr) {
-    //         try {
-    //             jar.setCookie(
-    //                 toughCookie.Cookie.fromJSON({
-    //                     ...each,
-    //                     key: (each as toughCookie.SerializedCookie).key || each.name
-    //                 }) ?? "",
-    //                 "https://wpa.chat.zalo.me",
-    //             )
-    //         } catch {
-    //             console.log("encounter error");
-                
-    //         }
-    //     }
-
-    //     return jar;
-    // }
-
 
     public async loginQr(
         options?: { userAgent?: string; language?: string; qrPath?: string },
@@ -121,8 +125,14 @@ export class Zalo {
             callback,
         );
 
-        console.log(loginQrResult);
-        
+        const imei = generateZaloUUID(options.userAgent);
+
+        return this.loginCookie(ctx, {
+            cookie: loginQrResult?.cookies || [],
+            imei,
+            userAgent: options.userAgent,
+            language: options.language,
+        });
     }
 }
 

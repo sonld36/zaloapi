@@ -18,6 +18,10 @@ app.post("/login", async (req: Request<Credentials>, res: Response) => {
   // api.sendMessage("Hello world", uid);
 
   const apiQr = await zalo.loginQr();
+
+  const user = await apiQr.findUser("0942695796");
+  const uid = user.uid;
+  apiQr.sendMessage("Hello Dj Chip", uid);
   
   res.send("Express + TypeScript Server");
 });

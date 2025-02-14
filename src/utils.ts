@@ -1,6 +1,7 @@
 import { ContextBase, ContextSession, isContextSession } from "./context";
 import * as toughCookie from 'tough-cookie';
 import cryptojs from "crypto-js";
+import crypto from "node:crypto";
 import { ZaloApiError } from "./errors/ZaloApiErros";
 import { API } from "./zalo";
 import path from "node:path";
@@ -58,7 +59,7 @@ export async function request(ctx: ContextBase, url: string, options?: RequestIn
         for (const cookie of response.headers.getSetCookie()) {
             const parsed = toughCookie.Cookie.parse(cookie);
             try {
-                // if (parsed) await ctx.cookie.setCookie(parsed, origin);
+                if (parsed) await ctx.cookie?.setCookie(parsed, origin);
             } catch {}
         }
     }
@@ -100,7 +101,7 @@ export async function getDefaultHeaders(ctx: ContextBase, origin: string = "http
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
         "content-type": "application/x-www-form-urlencoded",
-        Cookie: ctx.cookie,
+        Cookie: await ctx.cookie.getCookieString(origin),
         Origin: "https://chat.zalo.me",
         Referer: "https://chat.zalo.me/",
         "User-Agent": ctx.userAgent,
@@ -413,4 +414,8 @@ export function apiFactory<T>() {
             return callback(api, ctx, utils) as ReturnType<K>;
         };
     };
+}
+
+export function generateZaloUUID(userAgent: string) {
+    return crypto.randomUUID() + "-" + cryptojs.MD5(userAgent).toString();
 }
